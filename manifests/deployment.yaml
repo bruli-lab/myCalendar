@@ -18,7 +18,7 @@ spec:
         app: mycalendar
     spec:
       containers:
-      - image: ghcr.io/bruli/mycalendar:0.8.0
+      - image: ghcr.io/bruli/mycalendar:0.8.1
         name: mycalendar
         imagePullPolicy: IfNotPresent
         ports:
@@ -59,7 +59,7 @@ spec:
             - name: NTFY_URL
               value: https://ntfy.bru-li.me
             - name: NTFY_TOPIC
-              value: ws-ml
+              value: mycalendar
             - name: NTFY_USER
               valueFrom:
                   secretKeyRef:

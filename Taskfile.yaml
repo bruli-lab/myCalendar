@@ -4,7 +4,7 @@ vars:
   APP: 'mycalendar'
   DOCKERFILE: 'Dockerfile'
   IMAGE_REG: 'ghcr.io/bruli'
-  VERSION: '0.8.0'
+  VERSION: '0.8.1'
   GOLANGCI_LINT_VERSION: 'v2.11.4'
   IMAGE_NAME: '{{.IMAGE_REG}}/{{.APP}}'
   CURRENT_IMAGE: '{{.IMAGE_NAME}}:{{.VERSION}}'
