@@ -9,6 +9,8 @@ resources:
   - secret-ghcr.yaml
   - serviceaccount-default.yaml
   - pvc.yaml
+  - externalsecret-google.yaml
+  - externalsecret-ntfy.yaml
 
 commonLabels:
   app.kubernetes.io/part-of: mycalendar

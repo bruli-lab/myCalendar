@@ -37,7 +37,7 @@ func (p *Publisher) Publish(ctx context.Context, message string) error {
 	}
 	req.SetBasicAuth(p.user, p.password)
 	req.Header.Set("Content-Type", "text/plain")
-	req.Header.Set("Title", "WaterSystem")
+	req.Header.Set("Title", "MyCalendar")
 	req.Header.Set("Priority", "default")
 
 	resp, err := p.client.Do(req)
