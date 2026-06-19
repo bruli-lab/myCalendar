@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  packages: write
+  issues: write
+  pull-requests: write
+
+env:
+  IMAGE_NAME: ghcr.io/bruli/mycalendar
+  DEPLOYMENT_FILE: manifests/deployment.yaml
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - name: Semantic Release
+        id: semantic
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx semantic-release
+          TAG=$(git describe --tags --abbrev=0)
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          platforms: linux/arm64
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ steps.semantic.outputs.tag }}
+
+      - name: Update deployment image
+        run: |
+          sed -i "s|image: .*|image: ${{ env.IMAGE_NAME }}:${{ steps.semantic.outputs.tag }}|" "${{ env.DEPLOYMENT_FILE }}"
+
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add "${{ env.DEPLOYMENT_FILE }}"
+          git commit -m "chore: deploy ${{ steps.semantic.outputs.tag }} [skip ci]" || echo "No changes to commit"
+          git push
