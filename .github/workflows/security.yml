@@ -7,7 +7,7 @@ on:
       - "**.go"
       - "go.mod"
       - "go.sum"
-      - "Makefile"
+      - "Taskfile.yaml"
       - ".github/workflows/security.yml"
   pull_request:
     branches: [ "**" ]
@@ -45,4 +45,4 @@ jobs:
 
       - name: Security
         run: |
-          make security
+          task security
