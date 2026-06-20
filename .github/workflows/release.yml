@@ -1,4 +1,4 @@
-name: Release and Docker image
+name: Check, release and publish image
 
 on:
   push:
@@ -16,7 +16,35 @@ env:
   DEPLOYMENT_FILE: manifests/deployment.yaml
 
 jobs:
+  lint:
+      runs-on: ubuntu-latest
+
+     steps:
+           - name: Checkout
+             uses: actions/checkout@v5
+
+           - name: Setup Go and Task
+             uses: ./.github/actions/setup-go-task
+
+           - name: Lint
+             run: task lint
+  security:
+      runs-on: ubuntu-latest
+
+      steps:
+        - name: Checkout
+          uses: actions/checkout@v5
+
+        - name: Setup Go and Task
+          uses: ./.github/actions/setup-go-task
+
+        - name: Security
+          run: task security
+
   release:
+    needs:
+        - lint
+        - security
     runs-on: ubuntu-latest
 
     outputs:
