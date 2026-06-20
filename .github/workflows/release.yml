@@ -19,15 +19,15 @@ jobs:
   lint:
       runs-on: ubuntu-latest
 
-     steps:
-           - name: Checkout
-             uses: actions/checkout@v5
+      steps:
+          - name: Checkout
+            uses: actions/checkout@v5
 
-           - name: Setup Go and Task
-             uses: ./.github/actions/setup-go-task
+          - name: Setup Go and Task
+            uses: ./.github/actions/setup-go-task
 
-           - name: Lint
-             run: task lint
+          - name: Lint
+            run: task lint
   security:
       runs-on: ubuntu-latest
 
