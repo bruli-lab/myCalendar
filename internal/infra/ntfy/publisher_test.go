@@ -5,7 +5,7 @@ package ntfy_test
 import (
 	"testing"
 
-	"github.com/bruli/myCalendar/internal/infra/ntfy"
+	"github.com/bruli-lab/myCalendar/internal/infra/ntfy"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"
 )

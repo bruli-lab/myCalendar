@@ -1,9 +1,7 @@
-name: Check, release and publish image
+name: Check, release and build image
 
 on:
   push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -11,40 +9,101 @@ permissions:
   issues: write
   pull-requests: write
   packages: write
+  security-events: write
 
 env:
   DEPLOYMENT_FILE: manifests/deployment.yaml
 
 jobs:
   lint:
-      runs-on: ubuntu-latest
+    name: Lint
+    runs-on: ubuntu-latest
 
-      steps:
-          - name: Checkout
-            uses: actions/checkout@v5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
 
-          - name: Setup Go and Task
-            uses: ./.github/actions/setup-go-task
+      - name: Setup Go and Task
+        uses: ./.github/actions/setup-go-task
 
-          - name: Lint
-            run: task lint
+      - name: Lint
+        run: task lint
+
   security:
-      runs-on: ubuntu-latest
+    name: Security checks
+    runs-on: ubuntu-latest
 
-      steps:
-        - name: Checkout
-          uses: actions/checkout@v5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
 
-        - name: Setup Go and Task
-          uses: ./.github/actions/setup-go-task
+      - name: Setup Go and Task
+        uses: ./.github/actions/setup-go-task
 
-        - name: Security
-          run: task security
+      - name: Security
+        run: task security
+
+  trivy-filesystem:
+    name: Scan source and dependencies
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Trivy
+        env:
+          TRIVY_VERSION: "0.69.3"
+        run: |
+          set -euo pipefail
+
+          curl -fsSLo trivy.tar.gz \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+
+          tar -xzf trivy.tar.gz trivy
+          sudo install -m 0755 trivy /usr/local/bin/trivy
+
+          trivy --version
+
+      - name: Scan repository
+        run: |
+          set -euo pipefail
+
+          trivy filesystem \
+            --scanners vuln,misconfig,secret \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            .
+
+      - name: Generate SARIF report
+        if: always()
+        run: |
+          set -euo pipefail
+
+          trivy filesystem \
+            --scanners vuln,misconfig,secret \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --format sarif \
+            --output trivy-results.sarif \
+            .
+
+      - name: Upload results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-filesystem
 
   release:
+    name: Semantic release
     needs:
-        - lint
-        - security
+      - lint
+      - security
+      - trivy-filesystem
+
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
 
     outputs:
@@ -52,11 +111,13 @@ jobs:
       version: ${{ steps.semantic.outputs.new_release_version }}
 
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-node@v5
+      - name: Setup Node
+        uses: actions/setup-node@v5
         with:
           node-version: 24
 
@@ -67,13 +128,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build:
+    name: Build, scan and push image
     needs: release
-    if: needs.release.outputs.released == 'true'
 
-    runs-on: ubuntu-latest
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      needs.release.outputs.released == 'true'
+
+    runs-on:
+      - self-hosted
+      - raspberry
+      - docker-builder
 
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout
+        uses: actions/checkout@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -87,25 +156,74 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
-      - name: Build and push image
+      - name: Install Trivy
+        env:
+          TRIVY_VERSION: "0.69.3"
+        run: |
+          set -euo pipefail
+
+          curl -sfL \
+            https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sudo sh -s -- \
+                -b /usr/local/bin \
+                "v${TRIVY_VERSION}"
+
+          trivy --version
+
+      - name: Build image locally
         uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/arm64
-          push: true
+          load: true
+          push: false
           tags: |
-            ghcr.io/bruli/mycalendar:v${{ needs.release.outputs.version }}
-            ghcr.io/bruli/mycalendar:latest
+            ghcr.io/bruli-lab/mycalendar:v${{ needs.release.outputs.version }}
+            ghcr.io/bruli-lab/mycalendar:latest
+
+      - name: Scan final image
+        run: |
+          set -euo pipefail
+
+          trivy image \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            "ghcr.io/bruli-lab/mycalendar:v${{ needs.release.outputs.version }}"
+
+      - name: Push versioned image
+        run: |
+          set -euo pipefail
+
+          docker push \
+            "ghcr.io/bruli-lab/mycalendar:v${{ needs.release.outputs.version }}"
+
+      - name: Push latest image
+        run: |
+          set -euo pipefail
+
+          docker push \
+            "ghcr.io/bruli-lab/mycalendar:latest"
 
       - name: Update deployment image tag
+        env:
+          VERSION: v${{ needs.release.outputs.version }}
         run: |
-          VERSION=v${{ needs.release.outputs.version }}
+          set -euo pipefail
 
-          sed -i "s|ghcr.io/bruli/mycalendar:.*|ghcr.io/bruli/mycalendar:${VERSION}|g" "${{ env.DEPLOYMENT_FILE }}"
+          sed -i \
+            "s|ghcr.io/bruli-lab/mycalendar:[^[:space:]]*|ghcr.io/bruli-lab/mycalendar:${VERSION}|g" \
+            "${DEPLOYMENT_FILE}"
+
+          if git diff --quiet -- "${DEPLOYMENT_FILE}"; then
+            echo "Deployment already references ${VERSION}"
+            exit 0
+          fi
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add "${{ env.DEPLOYMENT_FILE }}"
-          git commit -m "chore: update image to ${VERSION}"
+          git add "${DEPLOYMENT_FILE}"
+          git commit -m "chore: update image to ${VERSION} [skip ci]"
           git push

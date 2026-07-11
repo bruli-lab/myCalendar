@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/bruli/myCalendar/internal/domain/auth"
+	"github.com/bruli-lab/myCalendar/internal/domain/auth"
 )
 
 type TokenFile struct {

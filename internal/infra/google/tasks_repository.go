@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/bruli/myCalendar/internal/domain/calendar"
+	"github.com/bruli-lab/myCalendar/internal/domain/calendar"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"

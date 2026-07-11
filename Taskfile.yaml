@@ -2,13 +2,7 @@ version: '3'
 
 vars:
   APP: 'mycalendar'
-  DOCKERFILE: 'Dockerfile'
-  IMAGE_REG: 'ghcr.io/bruli'
-  VERSION: '0.8.4'
   GOLANGCI_LINT_VERSION: 'v2.11.4'
-  IMAGE_NAME: '{{.IMAGE_REG}}/{{.APP}}'
-  CURRENT_IMAGE: '{{.IMAGE_NAME}}:{{.VERSION}}'
-  DOCKER_COMPOSE: 'COMPOSE_BAKE=true docker compose'
 
 tasks:
   default:
@@ -75,24 +69,3 @@ tasks:
       - security
     cmds:
       - echo "✅ Format, linter and security success."
-
-  docker-login:
-    desc: Login into Docker registry
-    cmds:
-      - echo "🔐 Logging into Docker registry..."
-      - echo "$CR_PAT" | docker login ghcr.io -u bruli --password-stdin
-
-  docker-push-image:
-    desc: Build and push Docker image
-    deps:
-      - docker-login
-    cmds:
-      - echo "🐳 Building and pushing Docker image {{.CURRENT_IMAGE}} ..."
-      - |
-        docker buildx build \
-          --platform linux/arm64 \
-          -t {{.CURRENT_IMAGE}} \
-          -f {{.DOCKERFILE}} \
-          --push \
-          .
-      - echo "✅ Image {{.CURRENT_IMAGE}} pushed successfully."

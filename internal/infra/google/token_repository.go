@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/bruli/myCalendar/internal/domain/auth"
+	"github.com/bruli-lab/myCalendar/internal/domain/auth"
 	"golang.org/x/oauth2"
 )
 

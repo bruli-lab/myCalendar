@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bruli/myCalendar/internal/domain/auth"
+	"github.com/bruli-lab/myCalendar/internal/domain/auth"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
