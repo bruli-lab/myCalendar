@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/myCalendar ./cmd/myCalendar
 # --- runtime ---
-FROM alpine:3.22
+FROM alpine:3.24
 
 RUN apk add --no-cache tzdata
 # copia el teu binari
