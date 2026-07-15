@@ -2,7 +2,7 @@ version: '3'
 
 vars:
   APP: 'mycalendar'
-  GOLANGCI_LINT_VERSION: 'v2.11.4'
+  GOLANGCI_LINT_VERSION: 'v2.12.2'
 
 tasks:
   default:
