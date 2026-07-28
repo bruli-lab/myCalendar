@@ -50,7 +50,7 @@ require (
 	google.golang.org/grpc v1.82.1 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	mvdan.cc/gofumpt v0.10.0 // indirect
+	mvdan.cc/gofumpt v0.11.0 // indirect
 )
 
 tool (
