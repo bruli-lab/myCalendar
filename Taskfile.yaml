@@ -29,6 +29,19 @@ tasks:
       - echo "📋 Active services:"
       - '{{.DOCKER_COMPOSE}} ps'
 
+  run:
+    desc: Run the app locally with the ntfy and LGTM containers (needs a .env file, see .env.example)
+    dotenv:
+      - .env
+    preconditions:
+      - sh: test -f .env
+        msg: "Create .env from .env.example and fill CLIENT_ID and CLIENT_SECRET"
+    cmds:
+      - echo "🚀 Starting ntfy and LGTM..."
+      - '{{.DOCKER_COMPOSE}} up -d ntfy lgtm'
+      - echo "🗓️ Running myCalendar (notifications at http://localhost:8086/mycalendar)..."
+      - go run ./cmd/myCalendar
+
   fmt:
     desc: Format code with gofumpt
     cmds:
