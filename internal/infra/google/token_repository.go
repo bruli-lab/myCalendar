@@ -15,7 +15,7 @@ type TokenRepository struct {
 func (t TokenRepository) Refresh(ctx context.Context, refreshToken string) (*auth.Auth, error) {
 	newToken, err := t.cfg.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken}).Token()
 	if err != nil {
-		return nil, fmt.Errorf("failed to refresh token: %w", err)
+		return nil, fmt.Errorf("failed to refresh token: %w", asRefreshError(err))
 	}
 	return toAuth(newToken)
 }

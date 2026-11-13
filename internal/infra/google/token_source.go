@@ -31,7 +31,7 @@ func (p *PersistentTokenSource) Token() (*oauth2.Token, error) {
 	current := toOAuthToken(stored)
 	token, err := p.cfg.TokenSource(p.ctx, current).Token()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get a valid token: %w", err)
+		return nil, fmt.Errorf("failed to get a valid token: %w", asRefreshError(err))
 	}
 	if token.AccessToken == current.AccessToken {
 		return token, nil

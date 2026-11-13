@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bruli-lab/myCalendar/internal/domain/auth"
 	"github.com/bruli-lab/myCalendar/internal/fixtures"
 	"github.com/bruli-lab/myCalendar/internal/infra/disk"
 	"github.com/bruli-lab/myCalendar/internal/infra/google"
@@ -72,6 +73,26 @@ func TestPersistentTokenSource_Token(t *testing.T) {
 			require.Equal(t, refreshToken, stored.RefreshToken())
 		})
 	}
+
+	t.Run(`Given a PersistentTokenSource with an expired token whose refresh token was revoked,
+	when Token method is called,
+	then it returns a refresh error`, func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"Token has been expired or revoked."}`))
+		}))
+		defer srv.Close()
+		expired := time.Now().Add(-time.Hour)
+		repo := disk.NewAuthenticationRepository(filepath.Join(t.TempDir(), "tokens.json"))
+		require.NoError(t, repo.Save(t.Context(), fixtures.AuthBuilder{Expiry: &expired}.Build()))
+		cfg := &oauth2.Config{ClientID: "id", ClientSecret: "secret", Endpoint: oauth2.Endpoint{TokenURL: srv.URL}}
+
+		_, err := google.NewPersistentTokenSource(t.Context(), cfg, repo).Token()
+
+		require.ErrorAs(t, err, &auth.RefreshError{})
+	})
 
 	t.Run(`Given a PersistentTokenSource without stored tokens,
 	when Token method is called,

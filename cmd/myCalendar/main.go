@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -33,7 +32,6 @@ import (
 const (
 	serviceName     = "myCalendar"
 	shutdownTimeout = 5 * time.Second
-	authTitle       = "🔑 MyCalendar authorization"
 )
 
 func main() {
@@ -108,14 +106,15 @@ func run() error {
 		tracer,
 	)))
 
-	if err = ensureAuthenticated(ctx, log, commandBus, oauthCfg, publisher, conf.CallbackHost); err != nil {
+	authorizer := httpinfra.NewAuthorizer(oauthCfg, publisher, commandBus, conf.CallbackHost)
+	if err = ensureAuthenticated(ctx, log, commandBus, authorizer); err != nil {
 		if errors.Is(err, context.Canceled) {
 			return nil
 		}
 		return err
 	}
 
-	scheduler, err := scheduleSummaries(ctx, log, commandBus, conf)
+	scheduler, err := scheduleSummaries(ctx, log, commandBus, authorizer, conf)
 	if err != nil {
 		log.ErrorContext(ctx, "Error scheduling summaries", "err", err)
 		return err
@@ -160,7 +159,13 @@ func shutdownServer(ctx context.Context, log *slog.Logger, srv *http.Server) {
 	}
 }
 
-func scheduleSummaries(ctx context.Context, log *slog.Logger, bus cqs.CommandBus, conf *config.Config) (*cron.Cron, error) {
+func scheduleSummaries(
+	ctx context.Context,
+	log *slog.Logger,
+	bus cqs.CommandBus,
+	authorizer *httpinfra.Authorizer,
+	conf *config.Config,
+) (*cron.Cron, error) {
 	c := cron.New(cron.WithLocation(conf.Location))
 	schedules := map[calendar.PeriodKind]string{
 		calendar.DailyPeriod:  conf.DailySchedule,
@@ -168,7 +173,7 @@ func scheduleSummaries(ctx context.Context, log *slog.Logger, bus cqs.CommandBus
 	}
 	for kind, schedule := range schedules {
 		if _, err := c.AddFunc(schedule, func() {
-			sendSummary(ctx, log, bus, kind, conf.Location, conf.JobTimeout)
+			sendSummary(ctx, log, bus, authorizer, kind, conf)
 		}); err != nil {
 			return nil, fmt.Errorf("invalid %s schedule %q: %w", kind, schedule, err)
 		}
@@ -181,26 +186,28 @@ func sendSummary(
 	ctx context.Context,
 	log *slog.Logger,
 	bus cqs.CommandBus,
+	authorizer *httpinfra.Authorizer,
 	kind calendar.PeriodKind,
-	loc *time.Location,
-	timeout time.Duration,
+	conf *config.Config,
 ) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	jobCtx, cancel := context.WithTimeout(ctx, conf.JobTimeout)
 	defer cancel()
-	log.InfoContext(ctx, "Sending summary", "kind", kind)
-	if _, err := bus.Handle(ctx, app.SendSummaryCmd{Kind: kind, Day: time.Now().In(loc)}); err != nil {
-		log.ErrorContext(ctx, "Error sending summary", "kind", kind, "err", err)
+	log.InfoContext(jobCtx, "Sending summary", "kind", kind)
+	_, err := bus.Handle(jobCtx, app.SendSummaryCmd{Kind: kind, Day: time.Now().In(conf.Location)})
+	if err == nil {
+		return
+	}
+	log.ErrorContext(jobCtx, "Error sending summary", "kind", kind, "err", err)
+	if errors.As(err, &auth.RefreshError{}) {
+		go func() {
+			if err := authorize(ctx, log, authorizer); err != nil && !errors.Is(err, context.Canceled) {
+				log.ErrorContext(ctx, "Error re-authorizing", "err", err)
+			}
+		}()
 	}
 }
 
-func ensureAuthenticated(
-	ctx context.Context,
-	log *slog.Logger,
-	bus cqs.CommandBus,
-	oauthCfg *oauth2.Config,
-	publisher *ntfy.Publisher,
-	callbackHost string,
-) error {
+func ensureAuthenticated(ctx context.Context, log *slog.Logger, bus cqs.CommandBus, authorizer *httpinfra.Authorizer) error {
 	_, err := bus.Handle(ctx, app.RefreshTokenCmd{})
 	if err == nil {
 		return nil
@@ -209,55 +216,23 @@ func ensureAuthenticated(
 		log.ErrorContext(ctx, "Error refreshing token", "err", err)
 		return err
 	}
-	log.WarnContext(ctx, "Authentication required", "err", err)
-	return authorize(ctx, log, bus, oauthCfg, publisher, callbackHost)
+	if err = authorize(ctx, log, authorizer); err != nil && !errors.Is(err, context.Canceled) {
+		log.ErrorContext(ctx, "Error authorizing", "err", err)
+	}
+	return err
 }
 
-func authorize(
-	ctx context.Context,
-	log *slog.Logger,
-	bus cqs.CommandBus,
-	oauthCfg *oauth2.Config,
-	publisher *ntfy.Publisher,
-	callbackHost string,
-) error {
-	codeCh := make(chan string, 1)
-	errCh := make(chan error, 1)
-
-	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", callbackHost)
-	if err != nil {
-		log.ErrorContext(ctx, "Error starting callback", "host", callbackHost, "err", err)
+func authorize(ctx context.Context, log *slog.Logger, authorizer *httpinfra.Authorizer) error {
+	log.WarnContext(ctx, "Authorization required, waiting for the user to authorize")
+	if err := authorizer.Authorize(ctx); err != nil {
+		if errors.Is(err, httpinfra.ErrAuthorizationInProgress) {
+			log.InfoContext(ctx, "Authorization already in progress")
+			return nil
+		}
 		return err
 	}
-	log.InfoContext(ctx, "Starting callback", "host", callbackHost)
-	srv := httpinfra.NewCallbackServer(callbackHost, codeCh, errCh)
-	defer shutdownServer(ctx, log, srv)
-	go func() {
-		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			errCh <- err
-		}
-	}()
-
-	authURL := oauthCfg.AuthCodeURL(rand.Text(), oauth2.AccessTypeOffline, oauth2.ApprovalForce)
-	if err = publisher.Publish(ctx, authTitle, "Click -> "+authURL); err != nil {
-		log.ErrorContext(ctx, "Error publishing authorization url", "err", err)
-	}
-
-	select {
-	case code := <-codeCh:
-		log.InfoContext(ctx, "Authorization received")
-		if _, err = bus.Handle(ctx, app.CreateTokensCmd{Code: code}); err != nil {
-			log.ErrorContext(ctx, "Error creating tokens", "err", err)
-			return err
-		}
-		log.InfoContext(ctx, "Tokens created")
-		return nil
-	case err = <-errCh:
-		log.ErrorContext(ctx, "Error during OAuth authorization", "err", err)
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	log.InfoContext(ctx, "Authorization completed, tokens created")
+	return nil
 }
 
 func buildLog(level slog.Level) *slog.Logger {
