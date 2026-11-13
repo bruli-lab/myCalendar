@@ -63,17 +63,19 @@ func pollMessages(ctx context.Context, t *testing.T, serverURL, topic string) []
 func TestPublisher_Publish(t *testing.T) {
 	serverURL := startNtfy(t)
 	tests := []struct {
-		name, topic, message string
+		name, topic, title, message string
 	}{
 		{
-			name:    "with a plain message, then it returns nil error and the message is delivered to the topic",
+			name:    "with a markdown message, then it returns nil error and the message is delivered to the topic with its UTF-8 title",
 			topic:   "calendar",
-			message: "📅 Today's events",
+			title:   "📅 Monday 16 November",
+			message: "**Events**\n_No events_",
 		},
 		{
 			name:    "with a message on another topic, then it returns nil error and the message is delivered only to that topic",
-			topic:   "tasks",
-			message: "✅ No tasks found",
+			topic:   "auth",
+			title:   "🔑 MyCalendar authorization",
+			message: "Click -> https://accounts.google.com",
 		},
 	}
 	for _, tt := range tests {
@@ -83,12 +85,12 @@ func TestPublisher_Publish(t *testing.T) {
 			pub, err := ntfy.NewPublisher("user", "pass", serverURL, tt.topic, noop.NewTracerProvider().Tracer("test"))
 			require.NoError(t, err)
 
-			require.NoError(t, pub.Publish(t.Context(), tt.message))
+			require.NoError(t, pub.Publish(t.Context(), tt.title, tt.message))
 
 			messages := pollMessages(t.Context(), t, serverURL, tt.topic)
 			require.Len(t, messages, 1)
 			require.Equal(t, "message", messages[0].Event)
-			require.Equal(t, "MyCalendar", messages[0].Title)
+			require.Equal(t, tt.title, messages[0].Title)
 			require.Equal(t, tt.message, messages[0].Message)
 		})
 	}
@@ -100,6 +102,6 @@ func TestPublisher_Publish(t *testing.T) {
 		pub, err := ntfy.NewPublisher("user", "pass", "http://127.0.0.1:1", "calendar", noop.NewTracerProvider().Tracer("test"))
 		require.NoError(t, err)
 
-		require.Error(t, pub.Publish(t.Context(), "testing"))
+		require.Error(t, pub.Publish(t.Context(), "title", "testing"))
 	})
 }

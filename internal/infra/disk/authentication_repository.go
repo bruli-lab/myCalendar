@@ -37,7 +37,7 @@ func (a AuthenticationRepository) Read(ctx context.Context) (*auth.Auth, error) 
 		}
 		var t TokenFile
 		if err := json.Unmarshal(data, &t); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal file: %s", err.Error())
+			return nil, fmt.Errorf("failed to unmarshal file: %w", err)
 		}
 		do, err := auth.New(t.AccessToken, t.RefreshToken, t.Expiry, t.TokenType)
 		if err != nil {
@@ -60,7 +60,7 @@ func (a AuthenticationRepository) Save(ctx context.Context, aut *auth.Auth) erro
 		}
 		data, err := json.MarshalIndent(tok, "", " ")
 		if err != nil {
-			return fmt.Errorf("failed to marshal token: %s", err.Error())
+			return fmt.Errorf("failed to marshal token: %w", err)
 		}
 		return a.writeAtomically(data)
 	}

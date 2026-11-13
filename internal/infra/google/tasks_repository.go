@@ -3,74 +3,77 @@ package google
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/bruli-lab/myCalendar/internal/domain/calendar"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
-	"golang.org/x/oauth2"
-	"google.golang.org/api/option"
 	gtasks "google.golang.org/api/tasks/v1"
 )
 
+const (
+	maxTasksPerPage = 100
+	endOfDay        = 24*time.Hour - time.Second
+)
+
 type TasksRepository struct {
-	log    *slog.Logger
+	svc    *gtasks.Service
 	tracer trace.Tracer
 }
 
-func (t TasksRepository) GetTasks(ctx context.Context, from, to time.Time, accessToken, tokenType string, slotType calendar.SlotType) ([]calendar.Task, error) {
-	ctx, span := t.tracer.Start(ctx, "TasksRepository.GetTasks")
+func (t TasksRepository) FindByPeriod(ctx context.Context, period calendar.Period) ([]calendar.Task, error) {
+	ctx, span := t.tracer.Start(ctx, "TasksRepository.FindByPeriod")
 	defer span.End()
-	ts := oauth2.StaticTokenSource(&oauth2.Token{
-		AccessToken: accessToken,
-		TokenType:   tokenType,
-	})
-	client := oauth2.NewClient(ctx, ts)
-	svc, err := gtasks.NewService(ctx, option.WithHTTPClient(client))
+	listIDs, err := t.taskListIDs(ctx)
 	if err != nil {
-		err = fmt.Errorf("failed to create tasks client: %w", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, err
+		return nil, recordError(span, err)
 	}
-	taskListsResp, err := svc.Tasklists.List().Do()
-	if err != nil {
-		err = fmt.Errorf("failed to get task lists: %w", err)
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, err
-	}
-	tasks := make([]calendar.Task, 0, len(taskListsResp.Items))
-	for _, list := range taskListsResp.Items {
-		call := svc.Tasks.List(list.Id).
-			DueMin(from.Format(time.RFC3339)).
-			DueMax(to.Format(time.RFC3339)).
+	var tasks []calendar.Task
+	for _, listID := range listIDs {
+		err = t.svc.Tasks.List(listID).
+			DueMin(period.FirstDay().Format(time.RFC3339)).
+			DueMax(period.LastDay().Add(endOfDay).Format(time.RFC3339)).
 			ShowCompleted(false).
 			ShowDeleted(false).
-			ShowHidden(false)
-
-		resp, err := call.Do()
-		if err != nil {
-			err = fmt.Errorf("failed to get tasks from list %s: %w", list.Id, err)
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-			return nil, err
-		}
-		for _, item := range resp.Items {
-			var due *time.Time
-			if item.Due != "" {
-				dueParsed, err := time.Parse(time.RFC3339, item.Due)
-				if err == nil {
-					due = &dueParsed
+			ShowHidden(false).
+			MaxResults(maxTasksPerPage).
+			Pages(ctx, func(page *gtasks.Tasks) error {
+				for _, item := range page.Items {
+					due, err := time.Parse(time.RFC3339, item.Due)
+					if err != nil {
+						span.AddEvent("task skipped", trace.WithAttributes(
+							attribute.String("task.id", item.Id),
+							attribute.String("error", err.Error()),
+						))
+						continue
+					}
+					tasks = append(tasks, calendar.NewTask(item.Title, due, item.WebViewLink))
 				}
-			}
-			tasks = append(tasks, *calendar.NewTask(item.Title, due, item.SelfLink, slotType))
+				return nil
+			})
+		if err != nil {
+			return nil, recordError(span, fmt.Errorf("failed to get tasks from list %s: %w", listID, err))
 		}
 	}
+	span.SetStatus(codes.Ok, "tasks found")
 	return tasks, nil
 }
 
-func NewTasksRepository(log *slog.Logger, tracer trace.Tracer) *TasksRepository {
-	return &TasksRepository{log: log, tracer: tracer}
+func (t TasksRepository) taskListIDs(ctx context.Context) ([]string, error) {
+	var ids []string
+	err := t.svc.Tasklists.List().Pages(ctx, func(page *gtasks.TaskLists) error {
+		for _, list := range page.Items {
+			ids = append(ids, list.Id)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get task lists: %w", err)
+	}
+	return ids, nil
+}
+
+func NewTasksRepository(svc *gtasks.Service, tracer trace.Tracer) *TasksRepository {
+	return &TasksRepository{svc: svc, tracer: tracer}
 }
