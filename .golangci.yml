@@ -5,6 +5,7 @@ run:
   tests: true
   build-tags:
     - infra
+    - functional
 
 issues:
   max-issues-per-linter: 0
@@ -87,6 +88,9 @@ linters:
           - nilnil
       - path: internal/infra/disk/authentication_repository\.go
         text: G117
+        linters:
+          - gosec
+      - path: tests/harness/
         linters:
           - gosec
       - source: "^//go:generate "

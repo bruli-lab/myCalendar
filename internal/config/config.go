@@ -25,6 +25,7 @@ type Config struct {
 	DailySchedule  string        `env:"DAILY_SCHEDULE" envDefault:"0 8 * * 0,2-6"`
 	WeeklySchedule string        `env:"WEEKLY_SCHEDULE" envDefault:"0 8 * * 1"`
 	JobTimeout     time.Duration `env:"JOB_TIMEOUT" envDefault:"2m"`
+	GoogleAPIURL   string        `env:"GOOGLE_API_URL"`
 	Location       *time.Location
 }
 

@@ -12,7 +12,10 @@ tasks:
       - task --list
 
   docker-up:
-    desc: Start services with Docker Compose
+    desc: Start the app, ntfy and LGTM with Docker Compose (needs a .env file, see .env.example)
+    preconditions:
+      - sh: test -f .env
+        msg: "Create .env from .env.example and fill CLIENT_ID and CLIENT_SECRET"
     cmds:
       - echo "🚀 Starting services with Docker Compose..."
       - '{{.DOCKER_COMPOSE}} up -d --build'
@@ -22,6 +25,11 @@ tasks:
     cmds:
       - echo "🛑 Stopping and removing Docker Compose services..."
       - '{{.DOCKER_COMPOSE}} down'
+
+  docker-logs:
+    desc: Follow the app logs
+    cmds:
+      - '{{.DOCKER_COMPOSE}} logs -f app'
 
   docker-ps:
     desc: Show active Docker Compose services
@@ -102,6 +110,14 @@ tasks:
         set -euo pipefail
         echo "🧪 Running infra tests..."
         go test -race -count=1 -tags=infra -json ./internal/infra/... | go tool tparse -all
+
+  test-functional:
+    desc: Run functional tests (builds the app and runs it against ntfy in testcontainers and a fake Google API, needs Docker)
+    cmds:
+      - |
+        set -euo pipefail
+        echo "🧪 Running functional tests..."
+        go test -count=1 -tags=functional -timeout 5m -json ./tests/functional/... | go tool tparse -all
 
   coverage:
     desc: Open the HTML coverage report of the last unit test run

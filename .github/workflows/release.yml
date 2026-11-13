@@ -46,7 +46,7 @@ jobs:
         run: task test
 
   test-infra:
-    name: Infra tests
+    name: Infra and functional tests
     runs-on: ubuntu-latest
 
     steps:
@@ -58,6 +58,9 @@ jobs:
 
       - name: Run infra tests
         run: task test-infra
+
+      - name: Run functional tests
+        run: task test-functional
 
   security:
     name: Security checks

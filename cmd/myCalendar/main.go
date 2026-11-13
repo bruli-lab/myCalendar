@@ -77,17 +77,17 @@ func run() error {
 		return err
 	}
 
-	oauthCfg := googleinfra.NewOAuthConfig(conf.ClientID, conf.ClientSecret, conf.CallbackURL)
+	oauthCfg := googleinfra.NewOAuthConfig(conf.ClientID, conf.ClientSecret, conf.CallbackURL, conf.GoogleAPIURL)
 	authRepo := disk.NewAuthenticationRepository(conf.TokensFile)
 	tokenRepo := googleinfra.NewTokenRepository(oauthCfg)
 	tokenSource := oauth2.ReuseTokenSource(nil, googleinfra.NewPersistentTokenSource(ctx, oauthCfg, authRepo))
 
-	calendarSvc, err := googleinfra.NewCalendarService(ctx, tokenSource)
+	calendarSvc, err := googleinfra.NewCalendarService(ctx, tokenSource, conf.GoogleAPIURL)
 	if err != nil {
 		log.ErrorContext(ctx, "Error creating calendar service", "err", err)
 		return err
 	}
-	tasksSvc, err := googleinfra.NewTasksService(ctx, tokenSource)
+	tasksSvc, err := googleinfra.NewTasksService(ctx, tokenSource, conf.GoogleAPIURL)
 	if err != nil {
 		log.ErrorContext(ctx, "Error creating tasks service", "err", err)
 		return err

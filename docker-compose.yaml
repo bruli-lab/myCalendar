@@ -1,4 +1,24 @@
 services:
+  app:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SERVER_HOST: ":8080"
+      CALLBACK_HOST: ":8081"
+      TOKENS_FILE: /data/tokens.json
+      NTFY_URL: http://ntfy
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    volumes:
+      - app-data:/data
+    depends_on:
+      - ntfy
+      - lgtm
+
   lgtm:
     image: grafana/otel-lgtm:latest
     ports:
@@ -17,3 +37,6 @@ services:
     environment:
       NTFY_BASE_URL: http://localhost:8086
       NTFY_AUTH_DEFAULT_ACCESS: read-write
+
+volumes:
+  app-data:
