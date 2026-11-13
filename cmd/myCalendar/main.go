@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/bruli-lab/myCalendar/internal/config"
@@ -34,12 +35,12 @@ func main() {
 }
 
 func run() error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	conf, err := config.New()
 	if err != nil {
-		fmt.Printf("Error reading config: %s\n", err.Error())
+		_, _ = fmt.Fprintf(os.Stderr, "Error reading config: %s\n", err)
 		return err
 	}
 	log := buildLog(conf.LogLevel)
@@ -50,7 +51,7 @@ func run() error {
 		return err
 	}
 	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
 
 		if err = tracingProv.Shutdown(shutdownCtx); err != nil {
@@ -58,7 +59,7 @@ func run() error {
 		}
 	}()
 	tracer := otel.Tracer(serviceName)
-	serverListener, err := net.Listen("tcp", conf.ServerHost)
+	serverListener, err := new(net.ListenConfig).Listen(ctx, "tcp", conf.ServerHost)
 	log.InfoContext(ctx, "Starting server", "host", conf.ServerHost)
 	if err != nil {
 		log.ErrorContext(ctx, "Error starting server", "err", err)
@@ -127,7 +128,7 @@ func run() error {
 		return err
 	case <-ctx.Done():
 		shutdown(ctx, srv, log)
-		return ctx.Err()
+		return nil
 	}
 }
 
@@ -215,9 +216,9 @@ func runHTTPServer(ctx context.Context, srv *http.Server, log *slog.Logger, serv
 
 func shutdown(ctx context.Context, srv *http.Server, log *slog.Logger) {
 	<-ctx.Done()
-	log.InfoContext(ctx, "Ctrl+C received, shutting down server")
+	log.InfoContext(ctx, "Shutdown signal received, shutting down server")
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
@@ -238,7 +239,7 @@ func initializeCallback(
 	codeCh := make(chan string, 1)
 	errCh := make(chan error, 1)
 
-	listener, err := net.Listen("tcp", callbackHost)
+	listener, err := new(net.ListenConfig).Listen(ctx, "tcp", callbackHost)
 	log.InfoContext(ctx, "Starting callback", "host", callbackHost)
 	if err != nil {
 		log.ErrorContext(ctx, "failed listening:", "address", callbackHost, "err", err)
@@ -278,7 +279,7 @@ func initializeCallback(
 		log.ErrorContext(ctx, "Error en OAuth", "err", err)
 		return err
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Error("error shutting down server", "err", err)
@@ -295,7 +296,7 @@ func buildAuthURL(ctx context.Context, cfg *oauth2.Config, publisher *ntfy.Publi
 		oauth2.ApprovalForce,
 	)
 
-	_ = publisher.Publish(ctx, fmt.Sprintf("Click -> %s", authURL))
+	_ = publisher.Publish(ctx, "Click -> "+authURL)
 }
 
 func buildOauthConfig(conf *config.Config) *oauth2.Config {
@@ -312,20 +313,10 @@ func buildOauthConfig(conf *config.Config) *oauth2.Config {
 	return cfg
 }
 
-func buildLog(level string) *slog.Logger {
-	levels := map[string]slog.Level{
-		"info":  slog.LevelInfo,
-		"debug": slog.LevelDebug,
-		"error": slog.LevelError,
-		"warn":  slog.LevelWarn,
-	}
-	l := levels[level]
-
+func buildLog(level slog.Level) *slog.Logger {
 	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: l,
+		Level: level,
 	})
 
-	log := slog.New(handler)
-	log.With("service", serviceName)
-	return log
+	return slog.New(handler).With("service", serviceName)
 }

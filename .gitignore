@@ -27,3 +27,6 @@ go.work.sum
 
 /env
 /tokens.json
+
+/CLAUDE.md
+/docs

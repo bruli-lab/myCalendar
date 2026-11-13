@@ -213,7 +213,7 @@ jobs:
           set -euo pipefail
 
           sed -i \
-            "s|ghcr.io/bruli-lab/mycalendar:[^[:space:]]*|ghcr.io/bruli-lab/mycalendar:${VERSION}|g" \
+            "s|ghcr.io/[^/[:space:]]*/mycalendar:[^[:space:]]*|ghcr.io/bruli-lab/mycalendar:${VERSION}|g" \
             "${DEPLOYMENT_FILE}"
 
           if git diff --quiet -- "${DEPLOYMENT_FILE}"; then

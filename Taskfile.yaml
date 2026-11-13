@@ -3,6 +3,7 @@ version: '3'
 vars:
   APP: 'mycalendar'
   GOLANGCI_LINT_VERSION: 'v2.15.0'
+  DOCKER_COMPOSE: 'docker compose'
 
 tasks:
   default:

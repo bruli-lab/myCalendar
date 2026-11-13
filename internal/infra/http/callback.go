@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -21,7 +22,7 @@ func callback(codeCh chan<- string, errCh chan<- error) http.HandlerFunc {
 		if code == "" {
 			http.Error(w, "No code received", http.StatusBadRequest)
 			select {
-			case errCh <- fmt.Errorf("no code received"):
+			case errCh <- errors.New("no code received"):
 			default:
 			}
 			return
