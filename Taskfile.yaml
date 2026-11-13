@@ -35,6 +35,25 @@ tasks:
       - echo "👉 Formatting code with gofumpt..."
       - go tool gofumpt -w .
 
+  fmt-check:
+    desc: Fail if any file is not formatted with gofumpt
+    cmds:
+      - |
+        set -euo pipefail
+        echo "👉 Checking format with gofumpt..."
+        unformatted="$(go tool gofumpt -l .)"
+        if [ -n "${unformatted}" ]; then
+          echo "❌ Files not formatted:"
+          echo "${unformatted}"
+          exit 1
+        fi
+
+  generate:
+    desc: Generate mocks with moq
+    cmds:
+      - echo "🔧 Generating mocks..."
+      - go generate ./...
+
   security:
     desc: Check Go vulnerabilities
     cmds:
@@ -55,18 +74,39 @@ tasks:
       - echo "🚀 Executing golangci-lint..."
       - golangci-lint run ./...
 
+  test:
+    desc: Run unit tests with race detector and coverage
+    cmds:
+      - |
+        set -euo pipefail
+        echo "🧪 Running unit tests..."
+        go test -race -count=1 -cover -coverprofile=coverage.out -json ./... | go tool tparse -all
+
+  test-infra:
+    desc: Run infra tests (real files and testcontainers, needs Docker)
+    cmds:
+      - |
+        set -euo pipefail
+        echo "🧪 Running infra tests..."
+        go test -race -count=1 -tags=infra -json ./internal/infra/... | go tool tparse -all
+
+  coverage:
+    desc: Open the HTML coverage report of the last unit test run
+    cmds:
+      - go tool cover -html=coverage.out
+
   clean:
     desc: Clean local artifacts
     cmds:
       - echo "🧹 Cleaning local artifacts..."
-      - rm -rf bin dist coverage .*cache || true
+      - rm -rf bin dist coverage coverage.out .*cache || true
       - go clean -testcache
 
   check:
-    desc: Run format, lint and security checks
-    deps:
-      - fmt
-      - lint
-      - security
+    desc: Run format, lint, security and unit tests
     cmds:
-      - echo "✅ Format, linter and security success."
+      - task: fmt
+      - task: lint
+      - task: security
+      - task: test
+      - echo "✅ Format, linter, security and tests success."

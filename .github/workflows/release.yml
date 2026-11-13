@@ -2,14 +2,13 @@ name: Check, release and build image
 
 on:
   push:
+    branches:
+      - main
+  pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  issues: write
-  pull-requests: write
-  packages: write
-  security-events: write
+  contents: read
 
 env:
   DEPLOYMENT_FILE: manifests/deployment.yaml
@@ -26,8 +25,39 @@ jobs:
       - name: Setup Go and Task
         uses: ./.github/actions/setup-go-task
 
+      - name: Check format
+        run: task fmt-check
+
       - name: Lint
         run: task lint
+
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go and Task
+        uses: ./.github/actions/setup-go-task
+
+      - name: Run unit tests
+        run: task test
+
+  test-infra:
+    name: Infra tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go and Task
+        uses: ./.github/actions/setup-go-task
+
+      - name: Run infra tests
+        run: task test-infra
 
   security:
     name: Security checks
@@ -46,6 +76,10 @@ jobs:
   trivy-filesystem:
     name: Scan source and dependencies
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      security-events: write
 
     steps:
       - name: Checkout
@@ -100,11 +134,18 @@ jobs:
     name: Semantic release
     needs:
       - lint
+      - test
+      - test-infra
       - security
       - trivy-filesystem
 
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
 
     outputs:
       released: ${{ steps.semantic.outputs.new_release_published }}
@@ -139,6 +180,10 @@ jobs:
       - self-hosted
       - raspberry
       - docker-builder
+
+    permissions:
+      contents: write
+      packages: write
 
     steps:
       - name: Checkout
