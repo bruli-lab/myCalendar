@@ -1,49 +1,58 @@
 package http
 
 import (
+	"crypto/subtle"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 )
 
-func callback(codeCh chan<- string, errCh chan<- error) http.HandlerFunc {
+const callbackTimeout = 10 * time.Second
+
+func callback(state string, codeCh chan<- string, errCh chan<- error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if errParam := r.URL.Query().Get("error"); errParam != "" {
-			http.Error(w, "Authorization cancel: "+errParam, http.StatusBadRequest)
-			select {
-			case errCh <- fmt.Errorf("authorization cancel: %s", errParam):
-			default:
-			}
+		query := r.URL.Query()
+		if subtle.ConstantTimeCompare([]byte(query.Get("state")), []byte(state)) != 1 {
+			http.Error(w, "Invalid state", http.StatusBadRequest)
 			return
 		}
 
-		code := r.URL.Query().Get("code")
+		if errParam := query.Get("error"); errParam != "" {
+			http.Error(w, "Authorization cancel: "+errParam, http.StatusBadRequest)
+			notify(errCh, fmt.Errorf("authorization cancel: %s", errParam))
+			return
+		}
+
+		code := query.Get("code")
 		if code == "" {
 			http.Error(w, "No code received", http.StatusBadRequest)
-			select {
-			case errCh <- fmt.Errorf("no code received"):
-			default:
-			}
+			notify(errCh, errors.New("no code received"))
 			return
 		}
 
 		_, _ = fmt.Fprintln(w, "Authorization received. Can close the browser")
-
-		select {
-		case codeCh <- code:
-		default:
-		}
+		notify(codeCh, code)
 	}
 }
 
-func NewCallbackServer(host string, codeCh chan<- string, errCh chan<- error) *http.Server {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/callback", callback(codeCh, errCh))
+func notify[T any](ch chan<- T, value T) {
+	select {
+	case ch <- value:
+	default:
+	}
+}
 
-	return &http.Server{
+func NewCallbackServer(host, state string, codeCh chan<- string, errCh chan<- error) *http.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /callback", callback(state, codeCh, errCh))
+
+	srv := &http.Server{
 		Addr:         host,
 		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		ReadTimeout:  callbackTimeout,
+		WriteTimeout: callbackTimeout,
 	}
+	srv.SetKeepAlivesEnabled(false)
+	return srv
 }
