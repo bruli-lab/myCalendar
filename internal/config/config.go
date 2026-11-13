@@ -3,9 +3,12 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/robfig/cron/v3"
 )
 
 type Config struct {
@@ -39,5 +42,34 @@ func New() (*Config, error) {
 		return nil, fmt.Errorf("invalid TIMEZONE %q: %w", cfg.Timezone, err)
 	}
 	cfg.Location = loc
+	if err := validateSchedules(cfg.DailySchedule, cfg.WeeklySchedule); err != nil {
+		return nil, err
+	}
+	if cfg.GoogleAPIURL, err = normalizeGoogleAPIURL(cfg.GoogleAPIURL); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
+}
+
+func validateSchedules(daily, weekly string) error {
+	for name, schedule := range map[string]string{"DAILY_SCHEDULE": daily, "WEEKLY_SCHEDULE": weekly} {
+		if _, err := cron.ParseStandard(schedule); err != nil {
+			return fmt.Errorf("invalid %s %q: %w", name, schedule, err)
+		}
+	}
+	return nil
+}
+
+func normalizeGoogleAPIURL(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid GOOGLE_API_URL %q: %w", raw, err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Host == "" {
+		return "", fmt.Errorf("invalid GOOGLE_API_URL %q: it must be an absolute http or https URL", raw)
+	}
+	return strings.TrimSuffix(raw, "/"), nil
 }

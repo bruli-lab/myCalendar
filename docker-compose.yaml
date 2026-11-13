@@ -20,7 +20,7 @@ services:
       - lgtm
 
   lgtm:
-    image: grafana/otel-lgtm:latest
+    image: grafana/otel-lgtm:0.40.0
     ports:
       - "3002:3000"
       - "4327:4317"
