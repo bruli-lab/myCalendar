@@ -36,7 +36,7 @@ spec:
 
       containers:
         - name: mycalendar
-          image: ghcr.io/bruli/mycalendar:v1.0.9
+          image: ghcr.io/bruli-lab/mycalendar:v1.1.0
           imagePullPolicy: IfNotPresent
 
           securityContext:
