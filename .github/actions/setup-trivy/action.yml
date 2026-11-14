@@ -1,0 +1,39 @@
+name: Setup Trivy
+
+description: Install a pinned Trivy release after verifying its checksum
+
+inputs:
+  version:
+    description: Trivy version, without the leading v
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Trivy ${{ inputs.version }}
+      shell: bash
+      env:
+        TRIVY_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+
+        case "$(uname -m)" in
+          x86_64) arch="64bit" ;;
+          aarch64 | arm64) arch="ARM64" ;;
+          *) echo "Unsupported architecture $(uname -m)" >&2; exit 1 ;;
+        esac
+
+        tarball="trivy_${TRIVY_VERSION}_Linux-${arch}.tar.gz"
+        base_url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+        workdir="$(mktemp -d)"
+
+        curl -fsSLo "${workdir}/${tarball}" "${base_url}/${tarball}"
+        curl -fsSLo "${workdir}/checksums.txt" "${base_url}/trivy_${TRIVY_VERSION}_checksums.txt"
+
+        (cd "${workdir}" && grep " ${tarball}\$" checksums.txt | sha256sum --check --strict)
+
+        tar -xzf "${workdir}/${tarball}" -C "${workdir}" trivy
+        sudo install -m 0755 "${workdir}/trivy" /usr/local/bin/trivy
+        rm -rf "${workdir}"
+
+        trivy --version

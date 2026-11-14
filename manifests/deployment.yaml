@@ -92,7 +92,7 @@ spec:
               value: always_on
 
             - name: OTEL_EXPORTER_OTLP_PROTOCOL
-              value: grpc
+              value: http/protobuf
 
             - name: LOG_LEVEL
               value: error

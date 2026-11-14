@@ -3,6 +3,7 @@ version: '3'
 vars:
   APP: 'mycalendar'
   GOLANGCI_LINT_VERSION: 'v2.15.0'
+  DOCKER_COMPOSE: 'docker compose'
 
 tasks:
   default:
@@ -11,7 +12,10 @@ tasks:
       - task --list
 
   docker-up:
-    desc: Start services with Docker Compose
+    desc: Start the app, ntfy and LGTM with Docker Compose (needs a .env file, see .env.example)
+    preconditions:
+      - sh: test -f .env
+        msg: "Create .env from .env.example and fill CLIENT_ID and CLIENT_SECRET"
     cmds:
       - echo "🚀 Starting services with Docker Compose..."
       - '{{.DOCKER_COMPOSE}} up -d --build'
@@ -22,17 +26,54 @@ tasks:
       - echo "🛑 Stopping and removing Docker Compose services..."
       - '{{.DOCKER_COMPOSE}} down'
 
+  docker-logs:
+    desc: Follow the app logs
+    cmds:
+      - '{{.DOCKER_COMPOSE}} logs -f app'
+
   docker-ps:
     desc: Show active Docker Compose services
     cmds:
       - echo "📋 Active services:"
       - '{{.DOCKER_COMPOSE}} ps'
 
+  run:
+    desc: Run the app locally with the ntfy and LGTM containers (needs a .env file, see .env.example)
+    dotenv:
+      - .env
+    preconditions:
+      - sh: test -f .env
+        msg: "Create .env from .env.example and fill CLIENT_ID and CLIENT_SECRET"
+    cmds:
+      - echo "🚀 Starting ntfy and LGTM..."
+      - '{{.DOCKER_COMPOSE}} up -d ntfy lgtm'
+      - echo "🗓️ Running myCalendar (notifications at http://localhost:8086/mycalendar)..."
+      - go run ./cmd/myCalendar
+
   fmt:
     desc: Format code with gofumpt
     cmds:
       - echo "👉 Formatting code with gofumpt..."
       - go tool gofumpt -w .
+
+  fmt-check:
+    desc: Fail if any file is not formatted with gofumpt
+    cmds:
+      - |
+        set -euo pipefail
+        echo "👉 Checking format with gofumpt..."
+        unformatted="$(go tool gofumpt -l .)"
+        if [ -n "${unformatted}" ]; then
+          echo "❌ Files not formatted:"
+          echo "${unformatted}"
+          exit 1
+        fi
+
+  generate:
+    desc: Generate mocks with moq
+    cmds:
+      - echo "🔧 Generating mocks..."
+      - go generate ./...
 
   security:
     desc: Check Go vulnerabilities
@@ -54,18 +95,47 @@ tasks:
       - echo "🚀 Executing golangci-lint..."
       - golangci-lint run ./...
 
+  test:
+    desc: Run unit tests with race detector and coverage
+    cmds:
+      - |
+        set -euo pipefail
+        echo "🧪 Running unit tests..."
+        go test -race -count=1 -cover -coverprofile=coverage.out -json ./... | go tool tparse -all
+
+  test-infra:
+    desc: Run infra tests (real files and testcontainers, needs Docker)
+    cmds:
+      - |
+        set -euo pipefail
+        echo "🧪 Running infra tests..."
+        go test -race -count=1 -tags=infra -json ./internal/infra/... | go tool tparse -all
+
+  test-functional:
+    desc: Run functional tests (builds the app and runs it against ntfy in testcontainers and a fake Google API, needs Docker)
+    cmds:
+      - |
+        set -euo pipefail
+        echo "🧪 Running functional tests..."
+        go test -count=1 -tags=functional -timeout 5m -json ./tests/functional/... | go tool tparse -all
+
+  coverage:
+    desc: Open the HTML coverage report of the last unit test run
+    cmds:
+      - go tool cover -html=coverage.out
+
   clean:
     desc: Clean local artifacts
     cmds:
       - echo "🧹 Cleaning local artifacts..."
-      - rm -rf bin dist coverage .*cache || true
+      - rm -rf bin dist coverage coverage.out .*cache || true
       - go clean -testcache
 
   check:
-    desc: Run format, lint and security checks
-    deps:
-      - fmt
-      - lint
-      - security
+    desc: Run format, lint, security and unit tests
     cmds:
-      - echo "✅ Format, linter and security success."
+      - task: fmt
+      - task: lint
+      - task: security
+      - task: test
+      - echo "✅ Format, linter, security and tests success."

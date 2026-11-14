@@ -12,6 +12,8 @@ resources:
   - externalsecret-ntfy.yaml
   - externalsecret-ghrc.yaml
 
-commonLabels:
-  app.kubernetes.io/part-of: mycalendar
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: mycalendar
+    includeSelectors: true
 

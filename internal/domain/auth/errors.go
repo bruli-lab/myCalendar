@@ -2,7 +2,6 @@ package auth
 
 import (
 	"errors"
-	"fmt"
 )
 
 var (
@@ -17,7 +16,7 @@ type RefreshError struct {
 }
 
 func (a RefreshError) Error() string {
-	return fmt.Sprintf("refresh error: %s", a.msg)
+	return "refresh error: " + a.msg
 }
 
 func NewRefreshError(msg string) RefreshError {

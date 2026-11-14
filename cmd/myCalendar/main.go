@@ -9,23 +9,30 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
+	"github.com/bruli-lab/go-core/cqs"
+	"github.com/bruli-lab/go-core/event"
+	"github.com/bruli-lab/myCalendar/internal/app"
 	"github.com/bruli-lab/myCalendar/internal/config"
 	"github.com/bruli-lab/myCalendar/internal/domain/auth"
 	"github.com/bruli-lab/myCalendar/internal/domain/calendar"
 	"github.com/bruli-lab/myCalendar/internal/infra/disk"
 	googleinfra "github.com/bruli-lab/myCalendar/internal/infra/google"
 	httpinfra "github.com/bruli-lab/myCalendar/internal/infra/http"
+	"github.com/bruli-lab/myCalendar/internal/infra/listener"
 	"github.com/bruli-lab/myCalendar/internal/infra/ntfy"
 	"github.com/bruli-lab/myCalendar/internal/infra/tracing"
 	"github.com/robfig/cron/v3"
 	"go.opentelemetry.io/otel"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 )
 
-const serviceName = "myCalendar"
+const (
+	serviceName     = "myCalendar"
+	shutdownTimeout = 5 * time.Second
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -34,12 +41,12 @@ func main() {
 }
 
 func run() error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	conf, err := config.New()
 	if err != nil {
-		fmt.Printf("Error reading config: %s\n", err.Error())
+		_, _ = fmt.Fprintf(os.Stderr, "Error reading config: %s\n", err)
 		return err
 	}
 	log := buildLog(conf.LogLevel)
@@ -50,282 +57,185 @@ func run() error {
 		return err
 	}
 	defer func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 		defer cancel()
-
-		if err = tracingProv.Shutdown(shutdownCtx); err != nil {
+		if err := tracingProv.Shutdown(shutdownCtx); err != nil {
 			log.ErrorContext(ctx, "Error shutting down tracing", "err", err)
 		}
 	}()
 	tracer := otel.Tracer(serviceName)
-	serverListener, err := net.Listen("tcp", conf.ServerHost)
-	log.InfoContext(ctx, "Starting server", "host", conf.ServerHost)
+
+	serverErr, stopServer, err := startHealthServer(ctx, log, conf.ServerHost)
 	if err != nil {
-		log.ErrorContext(ctx, "Error starting server", "err", err)
 		return err
 	}
-	defer func() {
-		_ = serverListener.Close()
-	}()
+	defer stopServer()
 
-	srv := httpinfra.NewServer(conf.ServerHost)
-	defer func() {
-		log.InfoContext(ctx, "Closing server")
-		_ = srv.Shutdown(ctx)
-	}()
-
-	errCh := make(chan error, 1)
-	defer close(errCh)
-
-	go func() {
-		if err := runHTTPServer(ctx, srv, log, serverListener); err != nil {
-			errCh <- err
-		}
-	}()
-
-	cfg := buildOauthConfig(conf)
-
-	authRepo := disk.NewAuthenticationRepository(conf.TokensFile)
-	tokenRepo := googleinfra.NewTokenRepository(cfg)
-	refreshToken := auth.NewRefreshToken(authRepo, tokenRepo)
-	ntfyPublisher, err := ntfy.NewPublisher(conf.NtfyUser, conf.NtfyPassword, conf.NtfyURL, conf.NtfyTopic, tracer)
+	publisher, err := ntfy.NewPublisher(conf.NtfyUser, conf.NtfyPassword, conf.NtfyURL, conf.NtfyTopic, tracer)
 	if err != nil {
 		log.ErrorContext(ctx, "Error initializing ntfy publisher", "err", err)
 		return err
 	}
 
-	if err = refreshToken.Refresh(ctx); err != nil {
-		switch {
-		case errors.As(err, &auth.RefreshError{}):
-			log.WarnContext(ctx, "Error authenticating", "err", err)
-			if err := initializeCallback(ctx, log, tokenRepo, authRepo, cfg, ntfyPublisher, conf.CallbackHost); err != nil {
-				log.ErrorContext(ctx, "Error initializing callback", "err", err)
-				return err
-			}
-		default:
-			log.ErrorContext(ctx, "Error refreshing token on main", "err", err)
-			return err
-		}
-	}
+	oauthCfg := googleinfra.NewOAuthConfig(conf.ClientID, conf.ClientSecret, conf.CallbackURL, conf.GoogleAPIURL)
+	authRepo := disk.NewAuthenticationRepository(conf.TokensFile)
+	tokenRepo := googleinfra.NewTokenRepository(oauthCfg)
+	tokenSource := oauth2.ReuseTokenSource(nil, googleinfra.NewPersistentTokenSource(ctx, oauthCfg, authRepo))
 
-	eventsRepo := googleinfra.NewEventsRepository(tracer)
-	tasksRepo := googleinfra.NewTasksRepository(log, tracer)
-	getEventsSVC := calendar.NewGetEvents(eventsRepo, ntfyPublisher, authRepo, tracer)
-	getTasksSVC := calendar.NewGetTasks(tasksRepo, ntfyPublisher, authRepo, tracer)
-
-	c, err := jobs(ctx, log, refreshToken, getEventsSVC, getTasksSVC)
+	calendarSvc, err := googleinfra.NewCalendarService(ctx, tokenSource, conf.GoogleAPIURL)
 	if err != nil {
-		log.ErrorContext(ctx, "Error creating jobs", "err", err)
+		log.ErrorContext(ctx, "Error creating calendar service", "err", err)
+		return err
+	}
+	tasksSvc, err := googleinfra.NewTasksService(ctx, tokenSource, conf.GoogleAPIURL)
+	if err != nil {
+		log.ErrorContext(ctx, "Error creating tasks service", "err", err)
 		return err
 	}
 
-	c.Start()
+	eventBus := event.NewBus()
+	eventBus.Subscribe(calendar.SummaryGeneratedEventName, listener.NewPublishSummary(publisher, tracer))
+	withEvents := cqs.NewCommandHandlerEventBusMiddleware(&eventBus, tracer)
+
+	commandBus := cqs.NewCommandBus()
+	commandBus.Subscribe(app.RefreshTokenCmdName, withEvents(app.NewRefreshToken(authRepo, tokenRepo, tracer)))
+	commandBus.Subscribe(app.CreateTokensCmdName, withEvents(app.NewCreateTokens(tokenRepo, authRepo, tracer)))
+	commandBus.Subscribe(app.SendSummaryCmdName, withEvents(app.NewSendSummary(
+		googleinfra.NewEventsRepository(calendarSvc, conf.CalendarID, tracer),
+		googleinfra.NewTasksRepository(tasksSvc, tracer),
+		tracer,
+	)))
+
+	authorizer := httpinfra.NewAuthorizer(oauthCfg, publisher, commandBus, conf.CallbackHost)
+	if err = ensureAuthenticated(ctx, log, commandBus, authorizer); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	}
+
+	scheduler, err := scheduleSummaries(ctx, log, commandBus, authorizer, conf)
+	if err != nil {
+		log.ErrorContext(ctx, "Error scheduling summaries", "err", err)
+		return err
+	}
+	scheduler.Start()
+	defer func() {
+		<-scheduler.Stop().Done()
+	}()
 
 	select {
-	case err := <-errCh:
+	case err := <-serverErr:
 		log.ErrorContext(ctx, "Error running server", "err", err)
 		return err
 	case <-ctx.Done():
-		shutdown(ctx, srv, log)
-		return ctx.Err()
+		log.InfoContext(ctx, "Shutdown signal received")
+		return nil
 	}
 }
 
-func jobs(
-	ctx context.Context,
-	log *slog.Logger,
-	refreshToken *auth.RefreshToken,
-	getEventsSVC *calendar.GetEvents,
-	getTasksSVC *calendar.GetTasks,
-) (*cron.Cron, error) {
-	loc, err := time.LoadLocation("Europe/Madrid")
+func startHealthServer(ctx context.Context, log *slog.Logger, host string) (serverErr <-chan error, stop func(), err error) {
+	ln, err := new(net.ListenConfig).Listen(ctx, "tcp", host)
 	if err != nil {
-		log.ErrorContext(ctx, "Error loading location", "err", err)
-		return nil, err
-	}
-	c := cron.New(cron.WithLocation(loc))
-	log.InfoContext(ctx, "Running daily job")
-	_, _ = c.AddFunc("0 8 * * 0,2-6", func() {
-		now := time.Now()
-		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-		end := start.Add(24*time.Hour - time.Minute)
-		runGetEvents(ctx, refreshToken, log, getEventsSVC, "📅 Today's events\n────────────────", calendar.DailySlotType, start, end)
-		runGetTasks(ctx, refreshToken, log, getTasksSVC, "✅ Today's tasks\n────────────────", calendar.DailySlotType, start, end)
-	})
-	log.InfoContext(ctx, "Running weekly job")
-	_, _ = c.AddFunc("0 8 * * 1", func() {
-		now := time.Now()
-		start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-		endDay := start.AddDate(0, 0, 7)
-		end := time.Date(endDay.Year(), endDay.Month(), endDay.Day(), 23, 59, 0, 0, loc)
-		runGetEvents(ctx, refreshToken, log, getEventsSVC, "📅 Events for the week\n────────────────────", calendar.WeeklySlotType, start, end)
-		runGetTasks(ctx, refreshToken, log, getTasksSVC, "✅ Tasks for the week\n────────────────────", calendar.WeeklySlotType, start, end)
-	})
-	return c, nil
-}
-
-func runGetEvents(
-	ctx context.Context,
-	refreshToken *auth.RefreshToken,
-	log *slog.Logger,
-	getEventsSVC *calendar.GetEvents,
-	title string,
-	slotType calendar.SlotType,
-	start, end time.Time,
-) {
-	if err := refreshToken.Refresh(ctx); err != nil {
-		log.ErrorContext(ctx, "Error refreshing token on main", "err", err)
-	}
-
-	log.InfoContext(ctx, "Getting events", "from", start.Format("2006-01-02 15:04"), "end", end.Format("2006-01-02 15:04"))
-
-	if err := getEventsSVC.Get(ctx, start, end, title, slotType); err != nil {
-		log.ErrorContext(ctx, "Error getting events", "err", err)
-	}
-}
-
-func runGetTasks(
-	ctx context.Context,
-	refreshToken *auth.RefreshToken,
-	log *slog.Logger,
-	getTasksSVC *calendar.GetTasks,
-	title string,
-	slotType calendar.SlotType,
-	start, end time.Time,
-) {
-	if err := refreshToken.Refresh(ctx); err != nil {
-		log.ErrorContext(ctx, "Error refreshing token on main", "err", err)
-	}
-	log.InfoContext(ctx, "Getting tasks", "from", start.Format("2006-01-02 15:04"), "end", end.Format("2006-01-02 15:04"))
-
-	if err := getTasksSVC.Get(ctx, start, end, title, slotType); err != nil {
-		log.ErrorContext(ctx, "Error getting tasks", "err", err)
-	}
-}
-
-func runHTTPServer(ctx context.Context, srv *http.Server, log *slog.Logger, serverListener net.Listener) error {
-	go shutdown(ctx, srv, log)
-
-	if err := srv.Serve(serverListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.ErrorContext(ctx, "Error starting server", "err", err)
-		return err
+		return nil, nil, err
 	}
-	return nil
-}
-
-func shutdown(ctx context.Context, srv *http.Server, log *slog.Logger) {
-	<-ctx.Done()
-	log.InfoContext(ctx, "Ctrl+C received, shutting down server")
-
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Error("error shutting down server", "err", err)
-	}
-}
-
-func initializeCallback(
-	ctx context.Context,
-	log *slog.Logger,
-	tokenRepo *googleinfra.TokenRepository,
-	authRepo *disk.AuthenticationRepository,
-	cfg *oauth2.Config,
-	publisher *ntfy.Publisher,
-	callbackHost string,
-) error {
-	log.InfoContext(ctx, "Initializing callback")
-	codeCh := make(chan string, 1)
+	log.InfoContext(ctx, "Starting server", "host", host)
+	srv := httpinfra.NewServer(host)
 	errCh := make(chan error, 1)
-
-	listener, err := net.Listen("tcp", callbackHost)
-	log.InfoContext(ctx, "Starting callback", "host", callbackHost)
-	if err != nil {
-		log.ErrorContext(ctx, "failed listening:", "address", callbackHost, "err", err)
-		return err
-
-	}
-	defer func() {
-		_ = listener.Close()
-	}()
-
-	srv := httpinfra.NewCallbackServer(callbackHost, codeCh, errCh)
-	defer func() {
-		log.InfoContext(ctx, "Closing callback")
-		_ = srv.Shutdown(ctx)
-	}()
-
 	go func() {
-		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
+	return errCh, func() { shutdownServer(ctx, log, srv) }, nil
+}
 
-	buildAuthURL(ctx, cfg, publisher)
+func shutdownServer(ctx context.Context, log *slog.Logger, srv *http.Server) {
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.ErrorContext(ctx, "Error shutting down server", "addr", srv.Addr, "err", err)
+	}
+}
 
-	createTokenSVC := auth.NewCreateTokens(tokenRepo, authRepo)
-
-	var code string
-	select {
-	case code = <-codeCh:
-		log.InfoContext(ctx, "Authorization received.")
-		if err = createTokenSVC.Create(ctx, code); err != nil {
-			log.ErrorContext(ctx, "Error creating tokens", "err", err)
-			return err
+func scheduleSummaries(
+	ctx context.Context,
+	log *slog.Logger,
+	bus cqs.CommandBus,
+	authorizer *httpinfra.Authorizer,
+	conf *config.Config,
+) (*cron.Cron, error) {
+	c := cron.New(cron.WithLocation(conf.Location))
+	schedules := map[calendar.PeriodKind]string{
+		calendar.DailyPeriod:  conf.DailySchedule,
+		calendar.WeeklyPeriod: conf.WeeklySchedule,
+	}
+	for kind, schedule := range schedules {
+		if _, err := c.AddFunc(schedule, func() {
+			sendSummary(ctx, log, bus, authorizer, kind, conf)
+		}); err != nil {
+			return nil, fmt.Errorf("invalid %s schedule %q: %w", kind, schedule, err)
 		}
-		log.InfoContext(ctx, "Tokens created.")
-	case err := <-errCh:
-		log.ErrorContext(ctx, "Error en OAuth", "err", err)
+		log.InfoContext(ctx, "Summary scheduled", "kind", kind, "schedule", schedule)
+	}
+	return c, nil
+}
+
+func sendSummary(
+	ctx context.Context,
+	log *slog.Logger,
+	bus cqs.CommandBus,
+	authorizer *httpinfra.Authorizer,
+	kind calendar.PeriodKind,
+	conf *config.Config,
+) {
+	jobCtx, cancel := context.WithTimeout(ctx, conf.JobTimeout)
+	defer cancel()
+	log.InfoContext(jobCtx, "Sending summary", "kind", kind)
+	_, err := bus.Handle(jobCtx, app.SendSummaryCmd{Kind: kind, Day: time.Now().In(conf.Location)})
+	if err == nil {
+		return
+	}
+	log.ErrorContext(jobCtx, "Error sending summary", "kind", kind, "err", err)
+	if errors.As(err, &auth.RefreshError{}) {
+		go func() {
+			if err := authorize(ctx, log, authorizer); err != nil && !errors.Is(err, context.Canceled) {
+				log.ErrorContext(ctx, "Error re-authorizing", "err", err)
+			}
+		}()
+	}
+}
+
+func ensureAuthenticated(ctx context.Context, log *slog.Logger, bus cqs.CommandBus, authorizer *httpinfra.Authorizer) error {
+	_, err := bus.Handle(ctx, app.RefreshTokenCmd{})
+	if err == nil {
+		return nil
+	}
+	if !errors.As(err, &auth.RefreshError{}) {
+		log.ErrorContext(ctx, "Error refreshing token", "err", err)
 		return err
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.Error("error shutting down server", "err", err)
-		}
+	}
+	if err = authorize(ctx, log, authorizer); err != nil && !errors.Is(err, context.Canceled) {
+		log.ErrorContext(ctx, "Error authorizing", "err", err)
 	}
 	return err
 }
 
-func buildAuthURL(ctx context.Context, cfg *oauth2.Config, publisher *ntfy.Publisher) {
-	state := fmt.Sprintf("state-%d", time.Now().UnixNano())
-	authURL := cfg.AuthCodeURL(
-		state,
-		oauth2.AccessTypeOffline,
-		oauth2.ApprovalForce,
-	)
-
-	_ = publisher.Publish(ctx, fmt.Sprintf("Click -> %s", authURL))
+func authorize(ctx context.Context, log *slog.Logger, authorizer *httpinfra.Authorizer) error {
+	log.WarnContext(ctx, "Authorization required, waiting for the user to authorize")
+	if err := authorizer.Authorize(ctx); err != nil {
+		if errors.Is(err, httpinfra.ErrAuthorizationInProgress) {
+			log.InfoContext(ctx, "Authorization already in progress")
+			return nil
+		}
+		return err
+	}
+	log.InfoContext(ctx, "Authorization completed, tokens created")
+	return nil
 }
 
-func buildOauthConfig(conf *config.Config) *oauth2.Config {
-	cfg := &oauth2.Config{
-		ClientID:     conf.ClientID,
-		ClientSecret: conf.ClientSecret,
-		RedirectURL:  conf.CallbackURL,
-		Scopes: []string{
-			"https://www.googleapis.com/auth/calendar.readonly",
-			"https://www.googleapis.com/auth/tasks.readonly",
-		},
-		Endpoint: google.Endpoint,
-	}
-	return cfg
-}
-
-func buildLog(level string) *slog.Logger {
-	levels := map[string]slog.Level{
-		"info":  slog.LevelInfo,
-		"debug": slog.LevelDebug,
-		"error": slog.LevelError,
-		"warn":  slog.LevelWarn,
-	}
-	l := levels[level]
-
-	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: l,
-	})
-
-	log := slog.New(handler)
-	log.With("service", serviceName)
-	return log
+func buildLog(level slog.Level) *slog.Logger {
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+	return slog.New(handler).With("service", serviceName)
 }
